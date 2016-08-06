@@ -44,7 +44,7 @@ import * as errors from './errors.js';
 
 import { getS3Endpoint } from './s3-endpoints.js';
 
-import newChunkUploader from './chunk-uploader.js'
+import ChunkUploader from './chunk-uploader.js'
 
 var Package = require('../../package.json');
 
@@ -1028,7 +1028,7 @@ export default class Client {
         var multipartSize = this.calculatePartSize(size)
         var chunker = BlockStream2({size: this.minimumPartSize, zeroPadding: false})
         var sizeLimiter = transformers.getSizeLimiter(size, stream, chunker)
-        var chunkUploader = newChunkUploader(this, bucketName, objectName, contentType, uploadId, etags, multipartSize)
+        var chunkUploader = new ChunkUploader(this, bucketName, objectName, contentType, uploadId, etags, multipartSize)
         pipesetup(stream, chunker, sizeLimiter, chunkUploader)
           .on('error', e => cb(e))
           .on('data', etags => cb(null, etags, uploadId))

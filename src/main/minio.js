@@ -21,7 +21,6 @@ import Crypto from 'crypto'
 import Http from 'http'
 import Https from 'https'
 import Stream from 'stream'
-import Through2 from 'through2'
 import BlockStream2 from 'block-stream2'
 import Url from 'url'
 import Xml from 'xml'
@@ -44,6 +43,8 @@ import * as transformers from './transformers'
 import * as errors from './errors.js';
 
 import { getS3Endpoint } from './s3-endpoints.js';
+
+import newChunkUploader from './chunk-uploader.js'
 
 var Package = require('../../package.json');
 
@@ -1027,7 +1028,7 @@ export default class Client {
         var multipartSize = this.calculatePartSize(size)
         var chunker = BlockStream2({size: this.minimumPartSize, zeroPadding: false})
         var sizeLimiter = transformers.getSizeLimiter(size, stream, chunker)
-        var chunkUploader = this.chunkUploader(bucketName, objectName, contentType, uploadId, etags, multipartSize)
+        var chunkUploader = newChunkUploader(this, bucketName, objectName, contentType, uploadId, etags, multipartSize)
         pipesetup(stream, chunker, sizeLimiter, chunkUploader)
           .on('error', e => cb(e))
           .on('data', etags => cb(null, etags, uploadId))
@@ -1596,114 +1597,7 @@ export default class Client {
     listNext('', '')
   }
 
-  // Returns a stream that does multipart upload of the chunks it receives.
-  chunkUploader(bucketName, objectName, contentType, uploadId, partsArray, multipartSize) {
-    if (!isValidBucketName(bucketName)) {
-      throw new errors.InvalidBucketNameError('Invalid bucket name: ' + bucketName)
-    }
-    if (!isValidObjectName(objectName)) {
-      throw new errors.InvalidObjectNameError(`Invalid object name: ${objectName}`)
-    }
-    if (!isString(contentType)) {
-      throw new TypeError('contentType should be of type "string"')
-    }
-    if (!isString(uploadId)) {
-      throw new TypeError('uploadId should be of type "string"')
-    }
-    if (!isObject(partsArray)) {
-      throw new TypeError('partsArray should be of type "Array"')
-    }
-    if (!isNumber(multipartSize)) {
-      throw new TypeError('multipartSize should be of type "number"')
-    }
-    if (multipartSize > this.maximumPartSize) {
-      throw new errors.InvalidArgumentError(`multipartSize cannot be more than ${this.maximumPartSize}`)
-    }
-    var partsDone = []
-    var partNumber = 1
-
-    // convert array to object to make things easy
-    var parts = partsArray.reduce(function(acc, item) {
-      if (!acc[item.part]) {
-        acc[item.part] = item
-      }
-      return acc
-    }, {})
-
-    var aggregatedSize = 0
-
-    var aggregator = null   // aggregator is a simple through stream that aggregates
-                            // chunks of minimumPartSize adding up to multipartSize
-
-    var md5 = null
-    var sha256 = null
-    return Through2.obj((chunk, enc, cb) => {
-      if (chunk.length > this.minimumPartSize) {
-        return cb(new Error(`chunk length cannot be more than ${this.minimumPartSize}`))
-      }
-
-      // get new objects for a new part upload
-      if (!aggregator) aggregator = Through2()
-      if (!md5) md5 = Crypto.createHash('md5')
-      if (!sha256 && this.enableSHA256) sha256 = Crypto.createHash('sha256')
-
-      aggregatedSize += chunk.length
-      if (aggregatedSize > multipartSize) return cb(new Error('aggregated size cannot be greater than multipartSize'))
-
-      aggregator.write(chunk)
-      md5.update(chunk)
-      if (this.enableSHA256) sha256.update(chunk)
-
-      var done = false
-      if (aggregatedSize === multipartSize) done = true
-      // This is the last chunk of the stream.
-      if (aggregatedSize < multipartSize && chunk.length < this.minimumPartSize) done = true
-
-      // more chunks are expected
-      if (!done) return cb()
-
-      aggregator.end() // when aggregator is piped to another stream it emits all the chunks followed by 'end'
-
-      var part = parts[partNumber]
-      var md5sumHex = md5.digest('hex')
-      if (part) {
-        if (md5sumHex === part.etag) {
-          // md5 matches, chunk already uploaded
-          // reset aggregator md5 sha256 and aggregatedSize variables for a fresh multipart upload
-          aggregator = md5 = sha256 = null
-          aggregatedSize = 0
-          partsDone.push({part: part.part, etag: part.etag})
-          partNumber++
-          return cb()
-        }
-        // md5 doesn't match, upload again
-      }
-      var sha256sum = ''
-      if (this.enableSHA256) sha256sum = sha256.digest('hex')
-      var md5sumBase64 = (new Buffer(md5sumHex, 'hex')).toString('base64')
-      var multipart = true
-      var uploader = this.getUploader(bucketName, objectName, contentType, multipart)
-      uploader(uploadId, partNumber, aggregator, aggregatedSize, sha256sum, md5sumBase64, (e, etag) => {
-        if (e) {
-          return cb(e)
-        }
-        // reset aggregator md5 sha256 and aggregatedSize variables for a fresh multipart upload
-        aggregator = md5 = sha256 = null
-        aggregatedSize = 0
-        var part = {
-          part: partNumber,
-          etag: etag
-        }
-        partsDone.push(part)
-        partNumber++
-        cb()
-      })
-    }, function(cb) {
-      this.push(partsDone)
-      this.push(null)
-      cb()
-    })
-  }
+  
 
   // Returns a function that can be used for uploading objects.
   // If multipart === true, it returns function that is used to upload

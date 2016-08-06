@@ -78,72 +78,72 @@ export default class ChunkUploader extends Transform {
   }
 
   _write(chunk, enc, cb) {
-      if (chunk.length > this.client.minimumPartSize) {
-        return cb(new Error(`chunk length cannot be more than ${this.client.minimumPartSize}`))
-      }
+    if (chunk.length > this.client.minimumPartSize) {
+      return cb(new Error(`chunk length cannot be more than ${this.client.minimumPartSize}`))
+    }
 
-      // get new objects for a new part upload
-      if (!this.aggregator) this.aggregator = through2()
-      if (!this.md5) this.md5 = crypto.createHash('md5')
-      if (!this.sha256 && this.client.enableSHA256) this.sha256 = crypto.createHash('sha256')
+    // get new objects for a new part upload
+    if (!this.aggregator) this.aggregator = through2()
+    if (!this.md5) this.md5 = crypto.createHash('md5')
+    if (!this.sha256 && this.client.enableSHA256) this.sha256 = crypto.createHash('sha256')
 
-      this.aggregatedSize += chunk.length
-      if (this.aggregatedSize > this.multipartSize) return cb(new Error('aggregated size cannot be greater than multipartSize'))
+    this.aggregatedSize += chunk.length
+    if (this.aggregatedSize > this.multipartSize) return cb(new Error('aggregated size cannot be greater than multipartSize'))
 
-      this.aggregator.write(chunk)
-      this.md5.update(chunk)
-      if (this.client.enableSHA256) this.sha256.update(chunk)
+    this.aggregator.write(chunk)
+    this.md5.update(chunk)
+    if (this.client.enableSHA256) this.sha256.update(chunk)
 
-      var done = false
-      if (this.aggregatedSize === this.multipartSize) done = true
-      // This is the last chunk of the stream.
-      if (this.aggregatedSize < this.multipartSize && chunk.length < this.client.minimumPartSize) done = true
+    var done = false
+    if (this.aggregatedSize === this.multipartSize) done = true
+    // This is the last chunk of the stream.
+    if (this.aggregatedSize < this.multipartSize && chunk.length < this.client.minimumPartSize) done = true
 
-      // more chunks are expected
-      if (!done) return cb()
+    // more chunks are expected
+    if (!done) return cb()
 
-      this.aggregator.end() // when aggregator is piped to another stream it emits all the chunks followed by 'end'
+    this.aggregator.end() // when aggregator is piped to another stream it emits all the chunks followed by 'end'
 
-      var part = this.parts[this.partNumber]
-      var md5sumHex = this.md5.digest('hex')
-      if (part) {
-        if (md5sumHex === part.etag) {
-          // md5 matches, chunk already uploaded
-          // reset aggregator md5 sha256 and aggregatedSize variables for a fresh multipart upload
-          this.aggregator = this.md5 = this.sha256 = null
-          this.aggregatedSize = 0
-          this.partsDone.push({part: part.part, etag: part.etag})
-          this.partNumber++
-          return cb()
-        }
-        // md5 doesn't match, upload again
-      }
-      var sha256sum = ''
-      if (this.client.enableSHA256) sha256sum = this.sha256.digest('hex')
-      var md5sumBase64 = (new Buffer(md5sumHex, 'hex')).toString('base64')
-      var multipart = true
-      var uploader = this.client.getUploader(this.bucketName, this.objectName, this.contentType, multipart)
-      uploader(this.uploadId, this.partNumber, this.aggregator, this.aggregatedSize, sha256sum, md5sumBase64, (e, etag) => {
-        if (e) {
-          return cb(e)
-        }
+    var part = this.parts[this.partNumber]
+    var md5sumHex = this.md5.digest('hex')
+    if (part) {
+      if (md5sumHex === part.etag) {
+        // md5 matches, chunk already uploaded
         // reset aggregator md5 sha256 and aggregatedSize variables for a fresh multipart upload
         this.aggregator = this.md5 = this.sha256 = null
         this.aggregatedSize = 0
-        var part = {
-          part: this.partNumber,
-          etag: etag
-        }
-        this.partsDone.push(part)
+        this.partsDone.push({part: part.part, etag: part.etag})
         this.partNumber++
-        cb()
-      })
+        return cb()
+      }
+      // md5 doesn't match, upload again
     }
-
-    _flush(cb) { // TODO FIX?? no flush on writable
-      this.push(this.partsDone)
-      this.push(null)
+    var sha256sum = ''
+    if (this.client.enableSHA256) sha256sum = this.sha256.digest('hex')
+    var md5sumBase64 = (new Buffer(md5sumHex, 'hex')).toString('base64')
+    var multipart = true
+    var uploader = this.client.getUploader(this.bucketName, this.objectName, this.contentType, multipart)
+    uploader(this.uploadId, this.partNumber, this.aggregator, this.aggregatedSize, sha256sum, md5sumBase64, (e, etag) => {
+      if (e) {
+        return cb(e)
+      }
+      // reset aggregator md5 sha256 and aggregatedSize variables for a fresh multipart upload
+      this.aggregator = this.md5 = this.sha256 = null
+      this.aggregatedSize = 0
+      var part = {
+        part: this.partNumber,
+        etag: etag
+      }
+      this.partsDone.push(part)
+      this.partNumber++
       cb()
-    }
+    })
+  }
+
+  _flush(cb) { // TODO FIX?? no flush on writable
+    this.push(this.partsDone)
+    this.push(null)
+    cb()
+  }
 
 }
